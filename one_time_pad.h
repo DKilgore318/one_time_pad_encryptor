@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <C:\libsodium-win64\include\sodium.h>
+#include "sodium.h"
 
 
 #define BUFFER_SIZE 10
