@@ -1,7 +1,7 @@
  args
 -----
- d - decode, fileIn, cipherFile
- e - encode, fileIn, fileOut, cipherFile (optional)
- c - make a cipher, length(in kbytes), name
+decode: d fileIn cipherFile
+encode: e fileIn fileOut cipherFile (optional)
+make a cipher: c length(in kbytes) fileName
 
 when encoding, include file extension for fileIn, in all other cases do NOT include any file extension
