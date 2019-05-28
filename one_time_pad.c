@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
             if (argc == 4)
             {
                 fileOutFull[extLoc] = '\0';
-                cipherFile = cipher(findFileLength(fileIn)/1024 + 1, fileOutFull);
+                cipherFile = cipher((findFileLength(fileIn)/1024) + 1, fileOutFull);
             }
             else
             {
@@ -88,7 +88,7 @@ int main(int argc, char *argv[])
                     }
                     cipherFull[i] = argv[4][i];
                 }
-                if ((cipherFile = fopen(cipherFull, "rb")) == NULL)
+                if ((cipherFile = fopen(cipherFull, "rb+")) == NULL)
                 {
                     printf("cipherFile does not exist\n");
                     exit(2);
@@ -143,9 +143,9 @@ int main(int argc, char *argv[])
                     break;
                 }
                 cipherFull[i] = argv[3][i];
-                if (i = MAX_NAME_LENGTH - 3)
+                if (i == MAX_NAME_LENGTH - 3)
                 {
-                    printf("fileIn name is too long or corrupt\n");
+                    printf("fileIn name is incorrect or corrupted in the file\n");
                     exit(3);
                 }
             }
@@ -191,44 +191,65 @@ int main(int argc, char *argv[])
 void encode(FILE *fileIn, FILE *fileOut, FILE *cipherFile, char *inName)
 {
     char *buffer;
+    if ((buffer = (char *)malloc(sizeof(char))) == NULL)
+    {
+        printf("memory allocation error\n");
+        exit(3);
+    }
+    rewind(cipherFile);
+    rewind(fileIn);
 
     // get length of inName
     int nameLen = strlen((const char *)inName);
 
+    // put fileName into metaData
+    metaData buffMeta;
+    metaData fileMetaData;
+    sprintf(fileMetaData.fileName, (const char *)(inName));
+
+    // put offset of cipher into metaData
+    long offset[2];
+    fread((void *)&offset, sizeof(long), 2, cipherFile); // offset[0] = offset, offset[1] = cipher's offset key
+    fileMetaData.offset = offset[0] ^ offset[1]; // metadata's offset = encrypted offset
 
     // get length of fileIn
     fseek(fileIn, 0, SEEK_END);
     int inLen = ftell(fileIn);
     rewind(fileIn);
 
-    // length of file + name of file
-    int totLen = nameLen + inLen + 1;
+    // length of file + metaData of file
+    int totLen = METADATA_SIZE + inLen;
     //printf("inLen: %d\nnameLen: %d\ntotLen: %d\n", inLen, nameLen, totLen);
 
-    // get length of cipherfile, abort if smaller than fileIn + inName
+    // get length of cipherFile, abort if smaller than totlen - sizeof(long) + offset ( -long because we don't need cipher space to encrypt the offset)
     fseek(cipherFile, 0, SEEK_END);
     int cipLen = ftell(cipherFile);
-    rewind(cipherFile);
+    
 
-    if (cipLen < totLen)
+    if (cipLen < totLen - sizeof(long) + offset[0] || (fseek(cipherFile, offset[0], SEEK_SET)) != 0)
     {
-        printf("cipher file not long enough\n");
+        printf("ciplen: %d\ntotlen: %d\nsizeof(long):%d\noffset:%d\ncipher file not long enough\n",cipLen,totLen,sizeof(long),offset[0]);
+        printf("%d\n", totLen - sizeof(long) + offset[0]);
         exit(1);
     }
-    if ((buffer = (char *)malloc(sizeof(char))) == NULL)
-        exit(3);
     char curIn;
     char curCipher;
 
-    rewind(fileOut);
-    for (int i = 0; i < totLen; i++)
+    // write encrypted offset to fileout
+    fwrite((const void *)&fileMetaData.offset, sizeof(long), 1, fileOut);
+    // write encrypted filename to fileout
+    for (int i = 0; i < MAX_NAME_LENGTH + 1; i++)
     {
-        if (i < nameLen)
-            curIn = inName[i];
-        else if (i == nameLen)
-            curIn = '\0';
-        else
-            fread((void *)&curIn, 1, 1, fileIn);
+        curIn = fileMetaData.fileName[i];
+        fread((void *)&curCipher, 1, 1, cipherFile);
+        *buffer = curIn ^ curCipher;
+        //*buffer = curIn;
+        fwrite((const void *)buffer, 1, 1, fileOut);
+    }
+    // write fileIn to fileOut
+    for (int i = 0; i < inLen; i++)
+    {
+        fread((void *)&curIn, 1, 1, fileIn);
         fread((void *)&curCipher, 1, 1, cipherFile);
         *buffer = curIn ^ curCipher;
         //*buffer = curIn;
@@ -236,6 +257,14 @@ void encode(FILE *fileIn, FILE *fileOut, FILE *cipherFile, char *inName)
     }
     fclose(fileIn);
     fclose(fileOut);
+
+    long curOffset = (long)ftell(cipherFile);
+
+    // update cipherFile offset
+    rewind(cipherFile);
+    offset[0] += (long)totLen;
+    printf("%ld\n", offset[0]);
+    fwrite((const void *)offset, sizeof(long), 1, cipherFile);
     fclose(cipherFile);
     free(buffer);
 }
@@ -263,7 +292,13 @@ FILE *cipher(int len, char* fileName)
         exit(3);
     *buffer = 0;
 
-    randombytes_buf((void * const) buffer, (const size_t) len);
+    long offset;
+    offset = (long)sizeof(long); // offset starts here so offset and offset key aren't used to encrypt other data
+    fwrite((void const *)&offset, sizeof(long), 1, cip);
+    randombytes_buf((void * const)&offset, sizeof(long)); // random key to encrypt the offsets that go into fileOuts
+    fwrite((void const *)&offset, sizeof(long), 1, cip);
+
+    randombytes_buf((void * const) buffer, (const size_t)len);
     fwrite(buffer, 1, len, cip);
     rewind(cip);
     return cip;
@@ -272,7 +307,8 @@ FILE *cipher(int len, char* fileName)
 FILE *decode(FILE *fileIn, FILE *cipher)
 {
     FILE *fileOut;
-    char outName[100];
+    char outName[MAX_NAME_LENGTH + 1];
+    char cipName[MAX_NAME_LENGTH + 1];
     char buffer;
     char curCip;
     char curIn;
@@ -280,41 +316,78 @@ FILE *decode(FILE *fileIn, FILE *cipher)
     rewind(cipher);
 
     fseek(fileIn, 0, SEEK_END);
-    int inLen = ftell(fileIn);
+    long inLen = ftell(fileIn) - METADATA_SIZE;
     rewind(fileIn);
     rewind(cipher);
+    fseek(cipher, sizeof(long), SEEK_SET);
 
-    int foundName = 0;
-    int justFound = 1;
-    //printf("inlen: %d\n", inLen);
-    for (int i = 0; i < inLen; i++)
+    long offset[2];
+    fread((void *)&offset[0], sizeof(long), 1, fileIn); // get encrypted offset
+    fread((void *)&offset[1], sizeof(long), 1, cipher); // get offset key
+    offset[0] = offset[0] ^ offset[1]; // decrypt offset
+    printf("offset:%ld\n", offset[0]);
+    if (fseek(cipher, offset[0], SEEK_SET) != 0) // move cipher to offset
     {
-        fread((void *)&curIn, 1, 1, fileIn);
-        fread((void *)&curCip, 1, 1, cipher);
-        buffer = curIn ^ curCip;
-        if (foundName == 0)
-        {
-            if (i >= 100)
-            {
-                printf("could not find file name\n");
-                exit(1);
-            }
-            outName[i] = buffer;
-            if (buffer == '\0')
-                foundName = 1;
-        }
-        else
-        {
-            if (justFound == 1)
-            {
-                justFound = 0;
-                //printf("filename: %s\n", &outName[0]);
-                //printf("i: %d\n", i);
-                fileOut = fopen((const char *)(&outName[0]), "wb");
-            }
-            fwrite((const void *)(&buffer), 1, 1, fileOut);
-        }
+        printf("seek to offset failed\noffset:%d", offset[0]);
+        exit(4);
     }
+
+    //decrypt filename
+    fread((void *)&outName[0], 1, MAX_NAME_LENGTH + 1, fileIn);
+    fread((void *)&cipName[0], 1, MAX_NAME_LENGTH + 1, cipher);
+    for (int i = 0; i < MAX_NAME_LENGTH + 1; i++)
+    {
+        outName[i] = outName[i] ^ cipName[i];
+    }
+    fileOut = fopen((const char *)(&outName[0]), "wb");
+
+    for (long i = 0; i < inLen; i++)
+    {
+        if ((fread((void *)&curIn, 1, 1, fileIn)) != 1)
+            {
+                printf("cipher of incorrect length, do you have the right one?\nfileIn failed\n");
+                exit(4);
+            }
+        if ((fread((void *)&curCip, 1, 1, cipher)) != 1)
+            {
+                printf("cipher of incorrect length, do you have the right one?\ncipherFile failed\n");
+                exit(4);
+            }
+        buffer = curIn ^ curCip;
+        fwrite((const void *)(&buffer), 1, 1, fileOut);
+    }
+
+    //int foundName = 0;
+    //int justFound = 1;
+    //printf("inlen: %d\n", inLen);
+    // for (int i = 0; i < inLen; i++)
+    // {
+    //     fread((void *)&curIn, 1, 1, fileIn);
+    //     fread((void *)&curCip, 1, 1, cipher);
+    //     buffer = curIn ^ curCip;
+    //     if (foundName == 0)
+    //     {
+    //         if (i >= 100)
+    //         {
+    //             printf("could not find file name\n");
+    //             exit(1);
+    //         }
+    //         outName[i] = buffer;
+    //         if (buffer == '\0')
+    //             foundName = 1;
+    //     }
+    //     else
+    //     {
+    //         if (justFound == 1)
+    //         {
+    //             justFound = 0;
+    //             //printf("fileName: %s\n", &outName[0]);
+    //             //printf("i: %d\n", i);
+    //             fileOut = fopen((const char *)(&outName[0]), "wb");
+    //         }
+    //         fwrite((const void *)(&buffer), 1, 1, fileOut);
+    //     }
+    // }
     return fileOut;
 }
 int findFileLength(FILE *fileIn)

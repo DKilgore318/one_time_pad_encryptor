@@ -5,7 +5,7 @@ OBJ = one_time_pad.o
 
 LDIR = -L C:/libsodium-win64/lib
 LIB = -l libsodium
-DLLDIR = -L C:/libsodium-win64/bin
+DLLDIR = -L libsodium-win64\bin
 DLLIBS = -l libsodium-23
 #DLDIR = -L C:/libsodium-win64/bin
 #DL = -l libsodium-23
