@@ -13,7 +13,6 @@ typedef struct
     char fileName[MAX_NAME_LENGTH + 1];    
 } metaData;
 #define METADATA_SIZE sizeof(metaData)
-//dummy change
 
 void encode(FILE *fileIn, FILE *fileOut, FILE *cipher, char *inName);
 FILE* cipher(int length, char *fileName);
